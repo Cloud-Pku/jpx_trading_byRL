@@ -8,6 +8,48 @@ from ding.model.common import ReparameterizationHead, RegressionHead, DiscreteHe
     FCEncoder, ConvEncoder, IMPALAConvEncoder
 from ding.torch_utils import ResFCBlock, ResBlock, Flatten, normed_linear, normed_conv2d
 
+class MLP(torch.nn.Module):
+    def __init__(self,
+            obs_shape: SequenceType,
+            hidden_size_list: SequenceType = [512, 10, 2000, 128],
+        ) -> None:
+        super(MLP, self).__init__()
+        self.stock_num = obs_shape[0]
+        self.co_feature = self.stock_num * hidden_size_list[1]
+        # self.flatten = torch.nn.Flatten()
+        self.linear1 = torch.nn.Linear(obs_shape[1], hidden_size_list[0])
+        self.relu = torch.nn.ReLU()
+        self.linear2 = torch.nn.Linear(hidden_size_list[0], hidden_size_list[1])
+        self.linear3 = torch.nn.Linear(self.stock_num * hidden_size_list[1], hidden_size_list[2])
+        self.linear4 = torch.nn.Linear(hidden_size_list[2], hidden_size_list[3])
+        self.layer_norm = nn.LayerNorm(self.stock_num, eps=1e-6)
+        
+    # def forward(self, x):
+    #     x = x.permute(1,0,2)
+    #     res = [self.linear2(self.relu(
+    #         self.linear1(x[i])))
+    #            for i in range(x.shape[0])]
+    #     res = torch.stack(res)
+    #     res = res.permute(1,0,2)
+    #     res = res.reshape(res.shape[0], -1)
+    #     res = self.linear4(self.relu(self.linear3(self.relu(res))))
+    #     return res
+
+    def forward(self, x):
+        # x = x.unsqueeze(0)
+        # x = x.permute(1,0,2)
+
+        x = x.reshape(-1, x.shape[-1])
+        x = self.linear2(self.relu(self.linear1(x)))
+        x = x.reshape(-1, self.stock_num, x.shape[-1])
+        x = x.permute(0, 2, 1)
+        x = self.layer_norm(x)
+        x = x.permute(0, 2, 1)
+        x = x.reshape(-1, self.co_feature)
+        # res = res.permute(1,0,2)
+        res = self.linear4(self.relu(self.linear3(self.relu(x))))
+        return res
+    
 
 class ConvEncoder(nn.Module):
     """
@@ -152,7 +194,7 @@ class VAC(nn.Module):
         self.share_encoder = share_encoder
 
         # Encoder Type
-        def new_encoder(outsize):
+        def new_encoder(outsize, ):
             if impala_cnn_encoder:
                 return IMPALAConvEncoder(obs_shape=obs_shape, channels=encoder_hidden_size_list, outsize=outsize)
             else:
@@ -163,6 +205,10 @@ class VAC(nn.Module):
                         activation=activation,
                         norm_type=norm_type
                     )
+                elif len(obs_shape) == 2:
+                    return MLP(obs_shape=obs_shape,
+                               hidden_size_list=encoder_hidden_size_list
+                               )
                 elif len(obs_shape) == 3:
                     return ConvEncoder(
                         obs_shape=obs_shape,

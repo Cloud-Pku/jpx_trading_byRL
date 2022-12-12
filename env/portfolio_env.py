@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import gym
 import matplotlib
 import matplotlib.pyplot as plt
@@ -22,7 +23,7 @@ class StockPortfolioEnvJpx(gym.Env):
     ----------
         df: DataFrame
             input data
-        stock_dim : int
+        stock_num : int
             number of unique stocks
         hmax : int
             maximum number of shares to trade
@@ -38,8 +39,6 @@ class StockPortfolioEnvJpx(gym.Env):
             equals stock dimension
         tech_indicator_list: list
             a list of technical indicator names
-        turbulence_threshold: int
-            a threshold to control risk aversion
         day: int
             an increment number to control date
     Methods
@@ -65,41 +64,45 @@ class StockPortfolioEnvJpx(gym.Env):
 
     def __init__(
         self,
+        exp_name,
+        seed_num,
         df,
-        stock_dim,
-        hmax,
-        initial_amount,
-        transaction_cost_pct,
+        stock_num,
+        feature_ws,
         reward_scaling,
         state_space,
         action_space,
         tech_indicator_list,
-        turbulence_threshold=None,
         lookback=252,
         day=0,
         run_whole_train=False,
     ):
         # super(StockEnv, self).__init__()
         # money = 10 , scope = 1
+        self.exp_name = exp_name
+        self.seed_num = seed_num
         self.day = day
         self.init_day = day
         self.lookback = lookback
         self.df = df
-        self.stock_dim = stock_dim
-        self.initial_amount = initial_amount
-        self.transaction_cost_pct = transaction_cost_pct
+        self.tic = self.df.tic.unique()
+        self.stock_num = stock_num
+        self.feature_ws = feature_ws
         self.reward_scaling = reward_scaling
         self.state_space = state_space
         self.action_space = action_space
         self.tech_indicator_list = tech_indicator_list
-        self.run_whole_train = run_whole_train
         self.render_index = 0
+        self.run_whole_train = run_whole_train
         if self.run_whole_train:
-            self.lookback = len(self.df['date'].unique())
-            print("+"*50,self.df['date'].unique())
-            
+            self.lookback = len(self.df.date.unique()) - max(self.feature_ws)
+            print("start test")
+        
+        self.fig_path = os.path.abspath(os.path.join(os.getcwd(), self.exp_name,"fig")) 
+        if not os.path.exists(self.fig_path):
+            os.makedirs(self.fig_path)
 
-        # action_space normalization and shape is self.stock_dim
+        # action_space normalization and shape is self.stock_num
         self.action_space = spaces.Box(low=0, high=1, shape=(self.action_space, ))
         # Shape = (34, 30)
         # covariance matrix + technical indicators
@@ -111,35 +114,47 @@ class StockPortfolioEnvJpx(gym.Env):
 
         # load data from a pandas dataframe
         self.data = self.df.loc[self.day, :]
-        # self.covs = self.data["cov_list"].values[0]
-        self.state = np.array([self.data[tech].values.tolist() for tech in self.tech_indicator_list]).ravel('F')
+        # # self.covs = self.data["cov_list"].values[0]
+        # self.state = np.array([self.data[tech].values.tolist() for tech in self.tech_indicator_list]).ravel('F')
         self.terminal = False
-        self.turbulence_threshold = turbulence_threshold
 
         # initalize state: inital portfolio return + individual stock return + individual weights
         self.sharpe_ratio = 1.
 
         # memorize portfolio value each step
-        self.sharpe_ratio_memory = [self.initial_amount]
+        self.sharpe_ratio_memory = [0.]
         # memorize portfolio return each step
-        self.portfolio_return_memory = [0]
-        self.actions_memory = [[1 / self.stock_dim] * self.stock_dim]
+        self.portfolio_return_memory = [0.]
+        self.actions_memory = [[1 / self.stock_num] * self.stock_num]
         self.date_memory = [self.data.date.unique()[0]]
+
+
+    def cal_state(self):
+        curr_state = []
+        for tic in self.tic:
+            tmp_tic = self.df[self.df.tic == tic]
+            tmp_feature = []
+            for i, tech in enumerate(self.tech_indicator_list):
+                tmp_feature.append(tmp_tic[tech].values[self.day - self.feature_ws[i] +1: self.day+1])
+            curr_state.append(np.hstack(tmp_feature))
+        self.state = np.vstack(curr_state)
+        
 
     def step(self, actions):
         # print(self.day)
+        # print(self.day, self.init_day + self.lookback - 1)
         self.terminal = self.day >= self.init_day + self.lookback - 1
         # if True in np.isnan(actions):
         #     print(self.day, type(actions[0]), len(actions))
 
         if self.run_whole_train:
-            filename = "/mnt/lustre/chenyun/jpx_trading/example/results/whole_cumulative_reward_" + str(self.render_index) +".png"
+            filename = self.fig_path +"/whole_cumulative_reward_" + str(self.render_index) +".png"
         else:
-            filename = "/mnt/lustre/chenyun/jpx_trading/example/results/cumulative_reward.png"
+            filename = self.fig_path +"/cumulative_reward.png"
         if self.terminal:
             if self.run_whole_train:
                 self.render_index += 1
-                print("!"*40, self.render_index)
+                print("="*10, self.render_index, "="*10)
             df = pd.DataFrame(self.portfolio_return_memory)
             df.columns = ["daily_return"]
             plt.plot( df.daily_return.cumsum(), "r")
@@ -165,59 +180,42 @@ class StockPortfolioEnvJpx(gym.Env):
             plt.xlabel('Days')
             plt.ylabel('Rewards')
             plt.title('Rewards in Days')
-            plt.savefig("/mnt/lustre/chenyun/jpx_trading/example/results/rewards.png")
+            plt.savefig(self.fig_path +"/rewards.png")
             plt.close()
             print("="*40)
             print(f"final_sharpe_ratio:{self.sharpe_ratio}")
+            print(f"portfolio_return:{sum(self.portfolio_return_memory)}")
 
             df_daily_return = pd.DataFrame(self.portfolio_return_memory)
             df_daily_return.columns = ["daily_return"]
-            if df_daily_return["daily_return"].std() != 0:
-                sharpe = (df_daily_return["daily_return"].mean() / df_daily_return["daily_return"].std())
-                print("Sharpe: ", sharpe)
+            # if df_daily_return["daily_return"].std() != 0:
+            #     sharpe = (df_daily_return["daily_return"].mean() / df_daily_return["daily_return"].std())
+            #     print("Sharpe: ", sharpe)
 
-            if self.date_memory[-1] == "2021-12-02":
-                with open("/mnt/lustre/chenyun/jpx_trading/example/log/sharpe_ratio.pkl", 'rb') as f:
-                    sharpe = pickle.load(f)
-                    sharpe.append(self.sharpe_ratio)
-                with open("/mnt/lustre/chenyun/jpx_trading/example/log/sharpe_ratio.pkl", 'wb') as f:
-                    pickle.dump(sharpe, f)
-                return self.state, self.reward, self.terminal, {'sharpe_ratio' : self.sharpe_ratio}
+            # if self.date_memory[-1] == "2021-12-02":
+            #     with open(os.path.abspath(os.path.join(os.getcwd(), ".")) +"/log/sharpe_ratio.pkl", 'rb') as f:
+            #         sharpe = pickle.load(f)
+            #         sharpe.append(self.sharpe_ratio)
+            #     with open(os.path.abspath(os.path.join(os.getcwd(), ".")) +"/log/sharpe_ratio.pkl", 'wb') as f:
+            #         pickle.dump(sharpe, f)
+            #     return self.state, self.reward, self.terminal, {'sharpe_ratio' : self.sharpe_ratio}
             return self.state, self.reward, self.terminal, {}
 
         else:
-            # print("Model actions: ",actions)
-            # actions are the portfolio weight
-            # normalize to sum of 1
-            # if (np.array(actions) - np.array(actions).min()).sum() != 0:
-            #  norm_actions = (np.array(actions) - np.array(actions).min()) / (np.array(actions) - np.array(actions).min()).sum()
-            # else:
-            #  norm_actions = actions
-            # weights = self.softmax_normalization(actions)
             weights = actions
-            # print("="*30)
-            # print(weights)
-            # print(len(weights))
-            # print("Normalized actions: ", weights)
             self.actions_memory.append(weights)
-            last_day_memory = self.data
-            # print(last_day_memory)
-            # print(last_day_memory.columns)
-
-            # 
-
             # load next state
             self.day += 1
             self.data = self.df.loc[self.day, :]
-            self.state = np.array([self.data[tech].values.tolist() for tech in self.tech_indicator_list]).ravel('F')
-            # print(self.state)
+
+            self.cal_state()
+            # self.state = np.array([self.data[tech].values.tolist() for tech in self.tech_indicator_list]).ravel('F')
             # calcualte portfolio return
             # individual stocks' return * weight
-            #print("weights:", weights)
 
             # jpx return
             self.data.insert(loc = len(self.data.columns), column = 'rank', value = weights)
-            def _calc_spread_return_per_day(one_day_data, portfolio_size: int = 200, toprank_weight_ratio: float = 2):
+            def _calc_spread_return_per_day(one_day_data, portfolio_size: int = 10, toprank_weight_ratio: float = 2):
                 """
                 Args:
                     df (pd.DataFrame): predicted results
@@ -227,21 +225,12 @@ class StockPortfolioEnvJpx(gym.Env):
                     (float): spread return
                 """
                 weights = np.linspace(start=toprank_weight_ratio, stop=1, num=portfolio_size)
-                purchase = (one_day_data.sort_values(by='rank')['target'][:portfolio_size] * weights).sum() / weights.mean()
-                short = (one_day_data.sort_values(by='rank', ascending=False)['target'][:portfolio_size] * weights).sum() / weights.mean()
-                return purchase - short
+                purchase = (one_day_data.sort_values(by='rank', ascending=False)['target'].iloc[:portfolio_size] * weights).sum() / weights.mean()
+                short = (one_day_data.sort_values(by='rank')['target'].iloc[:portfolio_size] * weights).sum() / weights.mean()
+                return purchase - short 
 
 
             portfolio_return = _calc_spread_return_per_day(self.data)
-            #print("portfolio_return:", portfolio_return)
-            # if portfolio_return > 0.1:
-            #     print("="*30)
-            #     print(portfolio_return)
-            #     print(self.day)
-            #     print(self.df.loc[self.day-2])
-            #     print(self.df.loc[self.day-1])
-            #     print(self.df.loc[self.day])
-            #     print(self.df.loc[self.day+1])
             # update portfolio value
             self.portfolio_return_memory.append(portfolio_return)
             # self.reward = np.mean(self.portfolio_return_memory) / np.std(self.portfolio_return_memory) - self.sharpe_ratio
@@ -254,28 +243,29 @@ class StockPortfolioEnvJpx(gym.Env):
 
             # the reward is the new portfolio value or end portfolo value
             # self.reward = self.reward*self.reward_scaling
-
         return self.state, self.reward, self.terminal, {}
 
+
     def reset(self):
-        self.asset_memory = [self.initial_amount]
         # print("="*40)
         # print(len(self.df.date.unique()))
         if not self.run_whole_train:
-            self.init_day = self.day = np.random.randint(0, len(self.df.date.unique())-251)
+            self.init_day = self.day = np.random.randint(max(self.feature_ws), len(self.df.date.unique())- self.lookback +1)
         else :
-            self.init_day = self.day = 0
+            self.init_day = self.day = max(self.feature_ws) 
         # print(self.day)
+        
         self.data = self.df.loc[self.day, :]
+        
+        self.cal_state()
+                
+            
         # load states
-        self.state = np.array([self.data[tech].values.tolist() for tech in self.tech_indicator_list]).ravel('F')
-        self.portfolio_value = self.initial_amount
-        # self.cost = 0
-        # self.trades = 0
+        #self.state = np.array([self.data[tech].values.tolist() for tech in self.tech_indicator_list]).ravel('F')
         self.terminal = False
         self.portfolio_return_memory = [0]
-        self.actions_memory = [[1 / self.stock_dim] * self.stock_dim]
-        self.date_memory = [self.data.date.unique()[0]]
+        self.actions_memory = [[1 / self.stock_num] * self.stock_num]
+        self.date_memory = [self.df.date.unique()[self.day]]
         return self.state
 
     def render(self, mode="human"):
