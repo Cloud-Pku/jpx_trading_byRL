@@ -12,19 +12,43 @@ from ding.framework import task
 from ding.framework.context import OnlineRLContext
 from ding.framework.middleware import multistep_trainer, StepCollector, interaction_evaluator, CkptSaver, gae_estimator, termination_checker
 from ding.utils import set_pkg_seed
-
+from typing import Callable
+import pickle
 
 
 
 def log_step():
     def _rwt(ctx):
-        print("="*10, "train_iter:",ctx.train_iter, "env_step:",ctx.env_step, "="*10)
+        print("="*10, "train_iter:",ctx.train_iter, "env_step:",ctx.env_step, "ctx.eval_value:",ctx.eval_value, "="*10)
     return _rwt
 
-def trainer(env_name, main_config, create_config, env_train_kwargs, run_whole_train_kwargs, max_train_iter = 15000, seed=0):
+def keep_eval():
+    def _keep_eval(ctx):
+        ctx.keep('env_step', 'env_episode', 'train_iter', 'last_eval_iter', 'eval_value')
+    return _keep_eval
+
+def final_ctx_saver(name: str) -> Callable:
+
+    def _save(ctx: "Context"):
+        if task.finish:
+            with open(os.path.join(name, 'result.pkl'), 'wb') as f:
+                final_data = {
+                    'total_step': ctx.total_step,
+                    'train_iter': ctx.train_iter,
+                    'eval_value': ctx.eval_value,
+                }
+                if ctx.has_attr('env_step'):
+                    final_data['env_step'] = ctx.env_step
+                    final_data['env_episode'] = ctx.env_episode
+                pickle.dump(final_data, f)
+
+    return _save
+
+def trainer(env_name, main_config, create_config, env_train_kwargs, run_whole_train_kwargs, max_train_iter = 50, seed=0):
     logging.getLogger().setLevel(logging.INFO)
+
     cfg = compile_config(main_config, create_cfg=create_config, auto=True, seed=seed)
-    
+
     with task.start(async_mode=False, ctx=OnlineRLContext()):
         collector_env = BaseEnvManagerV2(
             env_fn=[
@@ -36,7 +60,8 @@ def trainer(env_name, main_config, create_config, env_train_kwargs, run_whole_tr
 
         run_whole_env = BaseEnvManagerV2(
             env_fn=[
-                lambda: DingEnvWrapper(gym.make("{}".format(env_name), **run_whole_train_kwargs)) for _ in range(1)
+                lambda: DingEnvWrapper(gym.make("{}".format(env_name), **run_whole_train_kwargs))
+                for _ in range(cfg.env.evaluator_env_num)
             ],
             cfg=cfg.env.manager
         )
@@ -49,12 +74,14 @@ def trainer(env_name, main_config, create_config, env_train_kwargs, run_whole_tr
         print("="*25)
         model = VAC(**cfg.policy.model)
         policy = PPOPolicy(cfg.policy, model=model)
+        task.use(keep_eval())
         # task.use(interaction_evaluator(cfg, policy.eval_mode, evaluator_env))
         task.use(interaction_evaluator(cfg, policy.eval_mode, run_whole_env))
         task.use(StepCollector(cfg, policy.collect_mode, collector_env))
         task.use(gae_estimator(cfg, policy.collect_mode))
         task.use(multistep_trainer(cfg, policy.learn_mode))
-        task.use(CkptSaver(cfg, policy, train_freq=10000))
-        task.use(termination_checker(max_env_step=1e7 ,max_train_iter=max_train_iter))
         task.use(log_step())
+        task.use(termination_checker(max_env_step=1e7 ,max_train_iter=max_train_iter))
+        task.use(final_ctx_saver(cfg.exp_name))
+        task.use(CkptSaver(cfg, policy, train_freq=10000))
         task.run()
