@@ -64,4 +64,4 @@ def generate_config(exp_name):
     )
     trading_ppo_create_config = EasyDict(trading_ppo_create_config)
     create_config = trading_ppo_create_config
-    return main_config, create_config, env_train_kwargs, run_whole_train_kwargs
+    return main_config, create_config

@@ -58,12 +58,12 @@ run_whole_train_kwargs={
     "run_whole_train":True
 }
 
-main_config, create_config, env_train_kwargs, run_whole_train_kwargs = generate_config(exp_name=exp_name)
+main_config, create_config = generate_config(exp_name=exp_name)
 
 
 register(id='trading-v2', entry_point='env.portfolio_env:StockPortfolioEnvJpx', max_episode_steps=10000)
 
-if __name__ == '__enter__':
+if __name__ == '__main__':
     main_config.policy.model.obs_shape = [100, sum(main_config.feature_ws)]
     env_train_kwargs["feature_ws"] = main_config.feature_ws
     run_whole_train_kwargs["feature_ws"] = main_config.feature_ws
