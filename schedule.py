@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.insert(0, os.getcwd())
+sys.path.insert(0, "/mnt/lustre/chenyun/jpx_trading/jpx_trading_byRL")
 from ditk import logging
 
 from lighttuner.hpo import R, uniform, choice

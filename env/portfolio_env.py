@@ -90,7 +90,6 @@ class StockPortfolioEnvJpx(gym.Env):
         self.run_whole_train = run_whole_train
         if self.run_whole_train:
             self.lookback = len(self.df.date.unique()) - max(self.feature_ws)
-            print("start test")
         
         self.fig_path = os.path.abspath(os.path.join(os.getcwd(), self.exp_name,"fig")) 
         if not os.path.exists(self.fig_path):
@@ -113,14 +112,14 @@ class StockPortfolioEnvJpx(gym.Env):
         self.terminal = False
 
         # initalize state: inital portfolio return + individual stock return + individual weights
-        self.sharpe_ratio = 1.
 
         # memorize portfolio value each step
-        self.sharpe_ratio_memory = [0.]
+        self.sharpe_ratio_memory = []
         # memorize portfolio return each step
-        self.portfolio_return_memory = [0.]
-        self.actions_memory = [[1 / self.stock_num] * self.stock_num]
-        self.date_memory = [self.data.date.unique()[0]]
+        self.portfolio_return_memory = []
+        self.actions_memory = []
+        self.date_memory = []
+        self.rankIC_memory = []
 
 
     def cal_state(self):
@@ -129,9 +128,15 @@ class StockPortfolioEnvJpx(gym.Env):
             tmp_tic = self.df[self.df.tic == tic]
             tmp_feature = []
             for i, tech in enumerate(self.tech_indicator_list):
-                tmp_feature.append(tmp_tic[tech].values[self.day - self.feature_ws[i] +1: self.day+1])
+                tmp_feature.append(tmp_tic[tech].values[self.day - self.feature_ws[i] + 1: self.day + 1])
             curr_state.append(np.hstack(tmp_feature))
         self.state = np.vstack(curr_state)
+        if self.state.shape != (100, 154):
+            print(self.state.shape)
+            print(self.day)
+            print(self.feature_ws)
+            logging.info('state shape({})\tday({})'.format(self.state.shape, self.day))
+            logging.info('Init Day({})\tLookback({})\tEnd Day({})'.format(self.init_day, self.lookback, self.init_day + self.lookback - 1))
         
     def _calc_spread_return_per_day(self, one_day_data, portfolio_size: int = 10, toprank_weight_ratio: float = 2):
             """
@@ -151,35 +156,88 @@ class StockPortfolioEnvJpx(gym.Env):
     def step(self, actions):
 
         # print(self.day, self.init_day + self.lookback - 1)
-        self.terminal = self.day >= self.init_day + self.lookback - 1
+        self.terminal = self.day >= self.init_day + self.lookback - 2
+
 
         # ======================
         weights = actions
+        
         self.actions_memory.append(weights)
         
         self.data = self.df.loc[self.day, :]
+        
         self.data.insert(loc = len(self.data.columns), column = 'rank', value = weights)
+        
+        # calculate rank IC
+        tmp_rank = np.argsort(weights)
+        exp_rank = np.argsort(self.data['target'].tolist())
+        rankIC = sum([(tmp_rank[i] - exp_rank[i])**2 for i in range(self.stock_num)]) * 6 / (self.stock_num - self.stock_num**3) + 1
+        self.rankIC_memory.append(rankIC)
         # jpx return
         portfolio_return = self._calc_spread_return_per_day(self.data)
-        self.reward = portfolio_return
-        # save into memory
         self.portfolio_return_memory.append(portfolio_return)
-        self.sharpe_ratio = np.mean(self.portfolio_return_memory) / (np.std(self.portfolio_return_memory) + 1e-7)
+        # calculate sharpe ratio
+        sharpe_ratio = np.mean(self.portfolio_return_memory) / (np.std(self.portfolio_return_memory) + 1e-7)
         self.date_memory.append(self.data.date.unique()[0])
-        self.sharpe_ratio_memory.append(self.sharpe_ratio)
+        self.sharpe_ratio_memory.append(sharpe_ratio)
+        # define reward
+        self.reward = rankIC
         # load next state
         self.day += 1
         self.cal_state()
         # =====================
             
         if self.run_whole_train:
-            filename = self.fig_path +"/whole_cumulative_reward_" + str(self.render_index) +".png"
+            cum_reward_file = self.fig_path +"/whole_cumulative_reward_" + str(self.render_index) +".png"
+            sharpe_file = self.fig_path +"/whole_sharpe_ratio_" + str(self.render_index) +".png"
+            rankIC_file = self.fig_path +"/whole_rankIC_" + str(self.render_index) +".png"
+            cum_rankIC_file = self.fig_path +"/whole_cumulative_rankIC_" + str(self.render_index) +".png"
         else:
-            filename = self.fig_path +"/cumulative_reward.png"
-        if self.terminal:
+            cum_reward_file = self.fig_path +"/cumulative_reward.png"
+            sharpe_file = self.fig_path +"/sharpe_ratio.png"
+            rankIC_file = self.fig_path +"/rankIC.png"
+            cum_rankIC_file = self.fig_path +"/cumulative_rankIC.png"
+        if self.terminal: # change
             if self.run_whole_train:
                 self.render_index += 1
                 print("="*10, self.render_index, "="*10)
+                
+            # render rankIC
+            plt.plot(self.rankIC_memory, "r")
+            plt.xticks(range(len(self.date_memory)), self.date_memory, rotation=45)
+            ax=plt.gca()
+            x_major_locator=MultipleLocator(50)
+            ax.xaxis.set_major_locator(x_major_locator)
+            plt.tick_params(labelsize=6)
+            plt.xlabel('Days')
+            plt.ylabel('Rank IC')
+            plt.title('Rank IC in Days')
+            plt.axhline(np.mean(self.rankIC_memory))
+            plt.text(0, np.mean(self.rankIC_memory), \
+                str(np.mean(self.rankIC_memory)), fontsize=7)
+            if self.run_whole_train:
+                plt.axvline(947)
+            plt.savefig(rankIC_file)
+            plt.close()
+            
+            # render cum rankIC
+            df = pd.DataFrame(self.rankIC_memory)
+            df.columns = ["rankIC"]
+            plt.plot( df.rankIC.cumsum(), "r")
+            plt.xticks(range(len(self.date_memory)), self.date_memory, rotation=45)
+            ax=plt.gca()
+            x_major_locator=MultipleLocator(50)
+            ax.xaxis.set_major_locator(x_major_locator)
+            plt.tick_params(labelsize=6)
+            plt.xlabel('Days')
+            plt.ylabel('Cumulative Rank IC')
+            plt.title('Cumulative Rank IC in Days')
+            if self.run_whole_train:
+                plt.axvline(947)
+            plt.savefig(cum_rankIC_file)
+            plt.close()
+
+            # render cum reward
             df = pd.DataFrame(self.portfolio_return_memory)
             df.columns = ["daily_return"]
             plt.plot( df.daily_return.cumsum(), "r")
@@ -193,9 +251,27 @@ class StockPortfolioEnvJpx(gym.Env):
             plt.title('Cumulative Rewards in Days')
             if self.run_whole_train:
                 plt.axvline(947)
-            plt.savefig(filename)
+            plt.savefig(cum_reward_file)
             plt.close()
-
+            
+            # render sharpe ratio
+            plt.plot(self.sharpe_ratio_memory[1:], "r")
+            plt.xticks(range(len(self.date_memory)-1), self.date_memory[1:], rotation=45)
+            ax=plt.gca()
+            x_major_locator=MultipleLocator(50)
+            ax.xaxis.set_major_locator(x_major_locator)
+            plt.tick_params(labelsize=6)
+            plt.xlabel('Days')
+            plt.ylabel('Sharpe Ratio')
+            plt.title('Sharpe Ratio in Days')
+            plt.text(len(self.date_memory)-1, self.sharpe_ratio_memory[-1], \
+                str(self.sharpe_ratio_memory[-1]), fontsize=7)
+            if self.run_whole_train:
+                plt.axvline(947)
+            plt.savefig(sharpe_file)
+            plt.close()
+            
+            # render rewards
             plt.plot(self.portfolio_return_memory, "r")
             plt.xticks(range(len(self.date_memory)), self.date_memory, rotation=45)
             ax=plt.gca()
@@ -208,22 +284,13 @@ class StockPortfolioEnvJpx(gym.Env):
             plt.savefig(self.fig_path +"/rewards.png")
             plt.close()
             print("="*40)
-            print(f"final_sharpe_ratio:{self.sharpe_ratio}")
+            print(f"mean_rank_IC:{np.mean(self.rankIC_memory)}")
+            print(f"final_sharpe_ratio:{sharpe_ratio}")
             print(f"portfolio_return:{sum(self.portfolio_return_memory)}")
 
             df_daily_return = pd.DataFrame(self.portfolio_return_memory)
             df_daily_return.columns = ["daily_return"]
-            # if df_daily_return["daily_return"].std() != 0:
-            #     sharpe = (df_daily_return["daily_return"].mean() / df_daily_return["daily_return"].std())
-            #     print("Sharpe: ", sharpe)
-
-            # if self.date_memory[-1] == "2021-12-02":
-            #     with open(os.path.abspath(os.path.join(os.getcwd(), ".")) +"/log/sharpe_ratio.pkl", 'rb') as f:
-            #         sharpe = pickle.load(f)
-            #         sharpe.append(self.sharpe_ratio)
-            #     with open(os.path.abspath(os.path.join(os.getcwd(), ".")) +"/log/sharpe_ratio.pkl", 'wb') as f:
-            #         pickle.dump(sharpe, f)
-            #     return self.state, self.reward, self.terminal, {'sharpe_ratio' : self.sharpe_ratio}
+            
             if self.run_whole_train:
                 print("="*10, 'final_eval_reward:', np.sum(self.portfolio_return_memory), "="*10)
             return self.state, self.reward, self.terminal, {}
@@ -240,10 +307,11 @@ class StockPortfolioEnvJpx(gym.Env):
             self.init_day = self.day = max(self.feature_ws) 
         self.data = self.df.loc[self.day, :]
         self.cal_state()
-    
         # load states
         self.terminal = False
+        self.rankIC_memory = []
         self.portfolio_return_memory = []
+        self.sharpe_ratio_memory = []
         self.actions_memory = []
         self.date_memory = []
         return self.state

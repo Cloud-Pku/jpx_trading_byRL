@@ -7,6 +7,7 @@ from ding.utils import SequenceType, squeeze, MODEL_REGISTRY
 from ding.model.common import ReparameterizationHead, RegressionHead, DiscreteHead, MultiHead, \
     FCEncoder, ConvEncoder, IMPALAConvEncoder
 from ding.torch_utils import ResFCBlock, ResBlock, Flatten, normed_linear, normed_conv2d
+from global_data import *
 
 class MLP(torch.nn.Module):
     def __init__(self,
@@ -45,6 +46,7 @@ class MLP(torch.nn.Module):
         x = x.permute(0, 2, 1)
         x = self.layer_norm(x)
         x = x.permute(0, 2, 1)
+        data_set.data_book.append(x.detach().numpy().tolist())
         x = x.reshape(-1, self.co_feature)
         # res = res.permute(1,0,2)
         res = self.linear4(self.relu(self.linear3(self.relu(x))))

@@ -19,7 +19,7 @@ import pickle
 
 def log_step():
     def _rwt(ctx):
-        print("="*10, "train_iter:",ctx.train_iter, "env_step:",ctx.env_step, "ctx.eval_value:",ctx.eval_value, "="*10)
+        logging.info('Evaluation: Train Iter({})\tEnv Step({})\tEval Value({:.3f})'.format(ctx.train_iter, ctx.env_step, ctx.eval_value))
     return _rwt
 
 def keep_eval():
@@ -44,11 +44,12 @@ def final_ctx_saver(name: str) -> Callable:
 
     return _save
 
-def trainer(env_name, main_config, create_config, env_train_kwargs, run_whole_train_kwargs, max_train_iter = 50, seed=0):
+def trainer(env_name, main_config, create_config, env_train_kwargs, run_whole_train_kwargs, max_train_iter = 1e7, seed=0):
     logging.getLogger().setLevel(logging.INFO)
 
     cfg = compile_config(main_config, create_cfg=create_config, auto=True, seed=seed)
-
+    env_train_kwargs["exp_name"] = cfg.exp_name
+    run_whole_train_kwargs["exp_name"] = cfg.exp_name
     with task.start(async_mode=False, ctx=OnlineRLContext()):
         collector_env = BaseEnvManagerV2(
             env_fn=[
@@ -67,11 +68,13 @@ def trainer(env_name, main_config, create_config, env_train_kwargs, run_whole_tr
         )
         
         set_pkg_seed(cfg.seed, use_cuda=cfg.policy.cuda)
-        print("="*10,"cuda used", "="*10)
-        print(cfg.policy.cuda)
-        print("="*10,"seed", "="*10)
-        print(cfg.seed)
-        print("="*25)
+        logging.info("======= cuda =======")
+        logging.info(cfg.policy.cuda)
+        logging.info("======= seed =======")
+        logging.info(cfg.seed)
+        logging.info("======= exp_name =======")
+        logging.info(cfg.exp_name)
+        logging.info("====================")
         model = VAC(**cfg.policy.model)
         policy = PPOPolicy(cfg.policy, model=model)
         task.use(keep_eval())
